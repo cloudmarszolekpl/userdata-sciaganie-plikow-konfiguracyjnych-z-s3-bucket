@@ -1,0 +1,212 @@
+Parameters:
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instances. Linked to AWS Parameter
+    Type: AWS::EC2::KeyPair::KeyName
+    ConstraintDescription: must be the name of an existing EC2 KeyPair.
+  BastionAdminpas:
+    Description: Password admin
+    NoEcho: true
+    Type: String
+    MinLength: 6
+    MaxLength: 12
+    AllowedPattern: "[a-zA-Z][a-zA-Z0-9]*" 
+      
+
+
+
+Mappings: 
+  RegionMap: 
+  # Paris
+    eu-west-3:
+      bastion: ami-03cd4b269ebe9fdb1
+      backend: ami-01c72e187b357583b
+  # Ireland      
+    eu-west-1:
+      bastion: ami-0ea3405d2d2522162
+      backend: ami-0b4b2d87bdd32212a
+  # Frankfurt  
+    eu-central-1:
+      bastion: ami-0c7c4b96b3288eea4
+      backend: ami-0e342d72b12109f91
+  # London      
+    eu-west-2:
+      bastion: ami-0d8aee0fe327c6fb2
+      backend: ami-0eb89db7593b5d434  # ubuntu
+    
+
+
+Resources:
+# Roles definition
+  assumebucketRole:
+    Type: "AWS::IAM::Role"
+    Properties: 
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement: 
+          - 
+            Effect: "Allow"
+            Principal: 
+              Service: 
+                - "ec2.amazonaws.com"
+            Action: 
+              - "sts:AssumeRole"
+      Path: "/"
+  RolePolicies: 
+    Type: "AWS::IAM::Policy"
+    Properties: 
+      PolicyName: "bucketaccess"
+      PolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - 
+            Effect: "Allow"
+           
+            Action:
+                - 's3:Getobject'
+               
+            Resource: 
+               - 'arn:aws:s3:::koszyk_zplikami/podfoledr/*'
+               - 'arn:aws:s3:::koszyk_zplikami/*'
+      Roles: 
+        - 
+          Ref: "assumebucketRole"
+  
+  assingInstanceProfile: 
+    Type: "AWS::IAM::InstanceProfile"
+    Properties: 
+      Path: "/"
+      Roles: 
+        - 
+          Ref: "assumebucketRole"
+
+# network definition 
+  pierwszaSiecVPC:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: https://koszyk_plikami.s3-eu-west-1.amazonaws.com/pierwszaSiec_wgAws.yaml
+      TimeoutInMinutes: 5
+  
+  # security group 
+  publicSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow RDP to Bastion
+      VpcId: !GetAtt pierwszaSiecVPC.Outputs.VPCId
+      SecurityGroupIngress:
+          -
+            IpProtocol: tcp
+            FromPort: 3389
+            ToPort: 3389
+            CidrIp: 0.0.0.0/0
+            
+  privateSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow SSH from Bastion
+      VpcId: !GetAtt pierwszaSiecVPC.Outputs.VPCId
+      SecurityGroupIngress:
+          -
+            IpProtocol: tcp
+            FromPort: 22
+            ToPort: 22
+            SourceSecurityGroupId: !Ref publicSecurityGroup       
+      SecurityGroupEgress:
+          -
+            IpProtocol: tcp
+            FromPort: 0
+            ToPort: 65535
+            DestinationSecurityGroupId: !Ref publicSecurityGroup
+         
+  # Bastion
+  
+  Ec2InstanceBastion: 
+    Type: AWS::EC2::Instance
+    #meta data 
+    Properties: 
+     ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", bastion]
+     InstanceType: 't2.micro'
+     KeyName: !Ref KeyName 
+     IamInstanceProfile: !Ref assingInstanceProfile
+     SubnetId: 
+          !GetAtt pierwszaSiecVPC.Outputs.PublicSubentid
+     SecurityGroupIds:
+        -
+          !Ref publicSecurityGroup
+     Tags:
+        - Key: "projekt"
+          Value: "pierwszaSiec"
+
+     UserData:
+      'Fn::Base64':
+         !Sub |
+           <powershell>
+           net user /add admin ${BastionAdminpas}      
+           net localgroup administrators admin /add          
+           mkdir "c:\aws\download"
+           Set-Location "c:\aws\download" 
+           Copy-S3Object -BucketName koszyk_zplikami -Key "configurefile/putty-64bit-0.73-installer.msi" -LocalFile "c:\aws\download\putty-64bit-0.73-installer.msi"  -Region eu-west-1
+           Copy-S3Object -BucketName koszyk_zplikami -Key "configurefile/PierwszaSiec.pem" -LocalFile "c:\aws\download\PierwszaSiec.pem"  -Region eu-west-1 
+           Copy-S3Object -BucketName koszyk_zplikami -Key "configurefile/PierwszaSiec.ppk" -LocalFile "c:\aws\download\PierwszaSiec.ppk"  -Region eu-west-1 
+           </powershell>
+           
+  
+  
+  # Backends 
+
+  Ec2InstanceBackEnd1: 
+    Type: AWS::EC2::Instance
+    Properties: 
+     ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", backend]
+     InstanceType: 't2.micro'
+     KeyName: !Ref KeyName 
+ 
+     SubnetId: 
+          !GetAtt pierwszaSiecVPC.Outputs.Private1Subentid
+     SecurityGroupIds:
+        -
+          !Ref privateSecurityGroup
+     Tags:
+        - Key: "projekt"
+          Value: "pierwszaSiec"
+
+
+  Ec2InstanceBackEnd2: 
+    Type: AWS::EC2::Instance
+    Properties: 
+     ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", backend]
+     InstanceType: 't2.micro'
+     KeyName: !Ref KeyName 
+   
+     SubnetId: 
+          !GetAtt pierwszaSiecVPC.Outputs.Private2Subentid
+     SecurityGroupIds:
+        -
+          !Ref privateSecurityGroup
+     Tags:
+        - Key: "projekt"
+          Value: "pierwszaSiec"
+
+
+
+  
+# out put
+
+
+Outputs:
+    IPAdressBastoin:
+      Description: "Bastion IP Addres"
+      Value: !GetAtt   Ec2InstanceBastion.PublicIp
+      Export:
+        Name: "BastionIPaddress"
+    IPAdressBackEnd1:
+      Description: "BackEnd1 IP Addres"
+      Value: !GetAtt   Ec2InstanceBackEnd1.PrivateIp
+      Export:
+        Name: "Backend1IPaddress"        
+    IPAdressBackEnd2:
+      Description: "BackEnd2 IP Addres"
+      Value: !GetAtt   Ec2InstanceBackEnd2.PrivateIp
+      Export:
+        Name: "Backend2IPaddress"           
+
+
